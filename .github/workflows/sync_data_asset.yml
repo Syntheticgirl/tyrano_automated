@@ -1,0 +1,58 @@
+name: Sync and Process Assets from Drive
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "full: 全処理 / diff: 差分だけ処理（Python側でスキップ）"
+        type: choice
+        options: [full, diff]
+        default: diff
+
+jobs:
+  sync-and-process:
+    runs-on: ubuntu-latest
+    env:
+      DRIVE_REMOTE_NAME: ${{ secrets.DRIVE_REMOTE_NAME }}
+      DRIVE_ROOT_PATH:  ${{ secrets.DRIVE_ROOT_PATH }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rclone ffmpeg python3 python3-pip
+
+      - name: Install Python deps
+        run: |
+          python3 -m pip install --upgrade pip
+          if [ -f .scripts/requirements.txt ]; then pip install -r .scripts/requirements.txt; fi
+
+      - name: Setup rclone config
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "${{ secrets.RCLONE_CONF_B64 }}" | base64 --decode > ~/.config/rclone/rclone.conf
+
+      - name: Pull Drive root (always)
+        run: |
+          mkdir -p temp_drive
+          rclone copy "$DRIVE_REMOTE_NAME:$DRIVE_ROOT_PATH" temp_drive \
+            --fast-list --create-empty-src-dirs --use-server-modtime
+
+      - name: Process assets (full or diff)
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          if [ "$MODE" = "full" ]; then
+            python3 .scripts/process_assets.py --mode full
+          else
+            python3 .scripts/process_assets.py --mode diff
+          fi
+
+      - name: Commit processed files
+        run: |
+          git config user.name  "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/
+          git diff --cached --quiet || git commit -m "[CI] Process assets (${{ github.event.inputs.mode }})"
+          git push
